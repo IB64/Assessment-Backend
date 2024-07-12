@@ -37,7 +37,7 @@ def get_all_subjects(conn: connection) -> dict:
     cur.close()
     return result
 
-
+"""TODO: FIX SQL INJECTION ATTACK"""
 def get_experiments(conn, experiment_type=None, score_over=None):
     cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     base_query = """
@@ -70,12 +70,42 @@ def get_experiments(conn, experiment_type=None, score_over=None):
         base_query += " WHERE " + " AND ".join(filters)
     
     base_query += " ORDER BY e.experiment_date DESC;"
-    print(base_query)
 
     cur.execute(base_query)
     experiments = cur.fetchall()
     cur.close()
     return experiments
+
+
+def delete_experiments(conn, experiment_id):
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+
+    # Check if the experiment exists
+    cur.execute("""
+        SELECT
+            experiment_id,
+            TO_CHAR(experiment_date, 'YYYY-MM-DD') AS experiment_date
+        FROM
+            experiment
+        WHERE
+            experiment_id = %s
+    """, (experiment_id,))
+    experiment = cur.fetchone()
+
+    if not experiment:
+        cur.close()
+        return jsonify({"error": f"Unable to locate experiment with ID {experiment_id}."}), 404
+
+    # Delete the experiment
+    cur.execute("""
+        DELETE FROM experiment
+        WHERE experiment_id = %s
+        RETURNING experiment_id, TO_CHAR(experiment_date, 'YYYY-MM-DD') AS experiment_date
+    """, (experiment_id,))
+    deleted_experiment = cur.fetchone()
+    conn.commit()
+    cur.close()
+    return deleted_experiment
 
 @app.route("/subject", methods=["GET"])
 def get_subjects_endpoint():
@@ -106,9 +136,12 @@ def get_experiments_endpoint():
     experiments = get_experiments(conn, experiment_type, score_over)
     return jsonify(experiments)
 
-@app.route("/stories/<int:story_id>", methods=["PATCH", "DELETE"])
-def delete_experiments_endpoint():
-    pass
+@app.route("/experiment/<int:experiment_id>", methods=["DELETE"])
+def delete_experiment_endpoint(experiment_id):
+
+    deleted_experiment = delete_experiments(conn, experiment_id)
+
+    return deleted_experiment
 
 @app.route("/", methods=["GET"])
 def index():
