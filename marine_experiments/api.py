@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from flask import Flask, jsonify, request
-from psycopg2 import sql, extras
+from psycopg2 import extras
 from psycopg2.extensions import connection
 
 from database_functions import get_db_connection
@@ -37,8 +37,8 @@ def get_all_subjects(conn: connection) -> dict:
     cur.close()
     return result
 
-"""TODO: FIX SQL INJECTION ATTACK"""
 def get_experiments(conn, experiment_type=None, score_over=None):
+    """Function to retrieve experiments."""
     cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     base_query = """
         SELECT
@@ -68,7 +68,7 @@ def get_experiments(conn, experiment_type=None, score_over=None):
 
     if filters:
         base_query += " WHERE " + " AND ".join(filters)
-    
+
     base_query += " ORDER BY e.experiment_date DESC;"
 
     cur.execute(base_query)
@@ -78,6 +78,7 @@ def get_experiments(conn, experiment_type=None, score_over=None):
 
 
 def delete_experiments(conn, experiment_id):
+    """Function to delete an experiment."""
     cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
     # Check if the experiment exists
@@ -109,16 +110,20 @@ def delete_experiments(conn, experiment_id):
 
 @app.route("/subject", methods=["GET"])
 def get_subjects_endpoint():
+    """GET endpoint for subject."""
     # Sort subjects by date_of_birth in descending order
     subjects = get_all_subjects(conn)
-    sorted_subjects = sorted(subjects, key=lambda x: datetime.strptime(x['date_of_birth'], '%Y-%m-%d'), reverse=True)
+    sorted_subjects = sorted(subjects,
+                             key=lambda x: datetime.strptime(x['date_of_birth'], '%Y-%m-%d'),
+                             reverse=True)
     return jsonify(sorted_subjects)
 
 
-@app.route("/experiment", methods=["GET", "POST"])
+@app.route("/experiment", methods=["GET"])
 def get_experiments_endpoint():
-    experiment_type = request.args.get('type')
-    score_over = request.args.get('score_over')
+    """GET endpoint for experiment."""
+    experiment_type = request.args.get("type")
+    score_over = request.args.get("score_over")
 
     if experiment_type:
         if experiment_type.lower() not in VALID_TYPES:
@@ -128,7 +133,7 @@ def get_experiments_endpoint():
     if score_over:
         try:
             score_over = int(score_over)
-            if not (0 <= score_over <= 100):
+            if not 0 <= score_over <= 100:
                 raise ValueError
         except ValueError:
             return jsonify({"error": "Invalid value for 'score_over' parameter"}), 400
@@ -138,14 +143,76 @@ def get_experiments_endpoint():
 
 @app.route("/experiment/<int:experiment_id>", methods=["DELETE"])
 def delete_experiment_endpoint(experiment_id):
-
+    """DELETE endpoint for experiment."""
     deleted_experiment = delete_experiments(conn, experiment_id)
 
     return deleted_experiment
 
-@app.route("/", methods=["GET"])
-def index():
-    return "Hello World"
+@app.route("/experiment", methods=["POST"])
+def create_experiment():
+    """POST endpoint for experiment."""
+    data = request.get_json()
+
+    # Validate input data
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    subject_id = data.get("subject_id")
+    print(subject_id)
+    experiment_type = data.get("experiment_type")
+    score = data.get('score')
+    experiment_date = data.get("experiment_date", datetime.now().strftime("%Y-%m-%d"))
+
+    if not subject_id:
+        return jsonify({"error": "Request missing key 'subject_id'."}), 400
+    if not isinstance(subject_id, int):
+        return jsonify({"error": "Invalid value for 'subject_id' parameter."}), 400
+    if subject_id <= 0:
+        return jsonify({"error": "Invalid value for 'subject_id' parameter."}), 400
+
+    if not experiment_type:
+        return jsonify({"error": "Request missing key 'experiment_type'."}), 400
+    if not isinstance(experiment_type, str):
+        return jsonify({"error": "Invalid value for 'experiment_type' parameter."}), 400
+    if experiment_type.lower() not in VALID_TYPES:
+        return jsonify({"error": "Invalid value for 'experiment_type' parameter."}), 400
+
+    if not score:
+        return jsonify({"error": "Request missing key 'score'."}), 400
+    if not isinstance(score, int) or score < 0:
+        return jsonify({"error": "Invalid value for 'score' parameter."}), 400
+
+    try:
+        datetime.strptime(experiment_date, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({"error": "Invalid value for 'experiment_date' parameter."}), 400
+
+    # Insert new experiment into the database
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+
+    # Retrieve experiment_type_id from experiment_type
+    cur.execute("""
+        SELECT experiment_type_id
+        FROM experiment_type
+        WHERE LOWER(type_name) = LOWER(%s)
+    """, (experiment_type,))
+    experiment_type_record = cur.fetchone()
+    if not experiment_type_record:
+        cur.close()
+        return jsonify({"error": "Invalid value for 'experiment_type' parameter"}), 400
+
+    experiment_type_id = experiment_type_record['experiment_type_id']
+
+    cur.execute("""
+        INSERT INTO experiment (subject_id, experiment_type_id, score, experiment_date)
+        VALUES (%s, %s, %s, %s)
+        RETURNING experiment_id, subject_id, experiment_type_id, score, TO_CHAR(experiment_date, 'YYYY-MM-DD') AS experiment_date
+    """, (subject_id, experiment_type_id, score, experiment_date))
+    new_experiment = cur.fetchone()
+    conn.commit()
+    cur.close()
+
+    return jsonify(new_experiment), 201
 
 if __name__ == "__main__":
 
